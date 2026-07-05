@@ -53,103 +53,87 @@ def decrypt_password(encrypted_list: list, shared_key: int) -> str:
         decrypted.append(chr(value ^ shared_key))
     return "".join(decrypted)
 
-def get_terminal_inputs():
+def get_crypto_params():
     """
-    Checks for existing configuration. If none exists, pauses the execution
-    and forces terminal input from the host user running the server.
+    Retrieves cryptographic parameters. If the config file exists, it is loaded.
+    Otherwise, it renders a setup form in the Streamlit UI to configure them.
     """
+    # 1. Check if already loaded in session state
+    if "crypto_params" in st.session_state:
+        return st.session_state.crypto_params
+
+    # 2. Check if local cache file exists
     if os.path.exists(CONFIG_FILE):
         try:
             with open(CONFIG_FILE, "r") as f:
-                return json.load(f)
+                params = json.load(f)
+                st.session_state.crypto_params = params
+                return params
         except Exception:
-            # If the file is corrupt, delete it and prompt again
             pass
 
-    # Print out terminal configuration visual prompts
-    print("\n" + "="*60)
-    print("🔑  DIFFIE-HELLMAN KEY EXCHANGE - SECURE INITIALIZATION  🔑")
-    print("="*60)
-    print("Please configure the cryptographic key parameters in this terminal.")
-    print("These parameters will be hidden from the web frontend.\n")
+    # 3. If no config is found, render the UI Setup Form
+    st.markdown("<h1 style='text-align: center;'>🔑 Diffie-Hellman Initial Setup</h1>", unsafe_allow_html=True)
+    st.markdown("<p style='text-align: center; color: #888888;'>Configure the public and private key parameters to initialize the secure portal.</p>", unsafe_allow_html=True)
+    st.divider()
 
-    # Input validation for Prime P
-    while True:
-        try:
-            p_val = int(input("Enter Prime Number (P): "))
-            if is_prime(p_val):
-                break
-            print("❌ Error: 'P' must be a prime number! Try again.")
-        except ValueError:
-            print("❌ Error: Please enter a valid integer.")
+    st.warning("⚠️ **No configuration found.** Please configure the cryptographic parameters below to start the server. These parameters are used to establish the secure handshake.")
 
-    # Input validation for Generator G
-    while True:
-        try:
-            g_val = int(input("Enter Primitive Root / Generator (G): "))
-            if g_val > 0:
-                break
-            print("❌ Error: Generator 'G' must be greater than 0.")
-        except ValueError:
-            print("❌ Error: Please enter a valid integer.")
+    with st.form("crypto_setup_form"):
+        col1, col2 = st.columns(2)
+        with col1:
+            p_val = st.number_input("Shared Prime (P)", min_value=2, value=97, help="Must be a prime number (e.g., 23, 97, 101).")
+            g_val = st.number_input("Generator/Base (G)", min_value=1, value=5, help="Must be a primitive root / generator modulo P.")
+        with col2:
+            client_priv = st.number_input("Client Private Key (a)", min_value=1, value=6, help="Client secret exponent.")
+            server_priv = st.number_input("Server Private Key (b)", min_value=1, value=15, help="Server secret exponent.")
 
-    # Input Client Private Key
-    while True:
-        try:
-            client_priv = int(input("Enter Client Private Key (a): "))
-            if client_priv > 0:
-                break
-            print("❌ Error: Client Private key must be positive.")
-        except ValueError:
-            print("❌ Error: Please enter a valid integer.")
+        submit = st.form_submit_button("Initialize & Run Portal", use_container_width=True)
 
-    # Input Server Private Key
-    while True:
-        try:
-            server_priv = int(input("Enter Server Private Key (b): "))
-            if server_priv > 0:
-                break
-            print("❌ Error: Server Private key must be positive.")
-        except ValueError:
-            print("❌ Error: Please enter a valid integer.")
+        if submit:
+            if not is_prime(p_val):
+                st.error("❌ Error: **P** must be a prime number!")
+            elif g_val <= 0 or g_val >= p_val:
+                st.error("❌ Error: Generator **G** must be greater than 0 and less than P!")
+            elif client_priv <= 0 or server_priv <= 0:
+                st.error("❌ Error: Private keys must be positive integers!")
+            else:
+                # Calculate public keys
+                client_pub = pow(g_val, client_priv, p_val)
+                server_pub = pow(g_val, server_priv, p_val)
+                
+                # Calculate shared secret
+                client_shared = pow(server_pub, client_priv, p_val)
+                server_shared = pow(client_pub, server_priv, p_val)
 
-    # Calculate keys
-    client_pub = pow(g_val, client_priv, p_val)
-    server_pub = pow(g_val, server_priv, p_val)
-    
-    client_shared = pow(server_pub, client_priv, p_val)
-    server_shared = pow(client_pub, server_priv, p_val)
+                if client_shared != server_shared:
+                    st.error("❌ Cryptographic Error: Computed shared keys do not match. Check your parameters.")
+                else:
+                    params = {
+                        "p": p_val,
+                        "g": g_val,
+                        "client_private": client_priv,
+                        "server_private": server_priv,
+                        "client_public": client_pub,
+                        "server_public": server_pub,
+                        "shared_key": client_shared
+                    }
+                    
+                    # Try to write locally if possible
+                    try:
+                        with open(CONFIG_FILE, "w") as f:
+                            json.dump(params, f)
+                    except Exception:
+                        pass # Ignore write errors if running in read-only environment
+                    
+                    st.session_state.crypto_params = params
+                    st.success("✅ Setup Successful! Loading Portal...")
+                    st.rerun()
 
-    if client_shared != server_shared:
-        print("❌ Cryptographic Error: Computed shared keys do not match. Aborting.")
-        sys.exit(1)
+    st.stop() # Halt execution until parameters are configured
 
-    shared_key = client_shared
-
-    # Package setup payload
-    params = {
-        "p": p_val,
-        "g": g_val,
-        "client_private": client_priv,
-        "server_private": server_priv,
-        "client_public": client_pub,
-        "server_public": server_pub,
-        "shared_key": shared_key
-    }
-
-    # Save to disk so rerun doesn't trigger terminal prompt again
-    with open(CONFIG_FILE, "w") as f:
-        json.dump(params, f)
-
-    print("\n✅ Cryptographic Setup Successful!")
-    print(f"Computed Shared Key: {shared_key}")
-    print("Frontend is now active. Refresh or open your browser tab.")
-    print("="*60 + "\n")
-    
-    return params
-
-# Read or request parameters via terminal
-crypto_params = get_terminal_inputs()
+# Read or request parameters
+crypto_params = get_crypto_params()
 shared_key = crypto_params["shared_key"]
 
 # Initialize Streamlit simulated database
@@ -162,7 +146,7 @@ st.markdown("<p style='text-align: center; color: #888888;'>Powered by Diffie-He
 st.divider()
 
 # Create standard Login and Register tabs on the UI
-tab1, tab2 = st.tabs(["🔑 Sign In", "📝 Create Account"])
+tab1, tab2, tab3 = st.tabs(["🔑 Sign In", "📝 Create Account", "📖 Documentation"])
 
 with tab2:
     st.subheader("Register New Account")
@@ -233,6 +217,66 @@ with tab1:
             else:
                 st.error("❌ **Invalid Username or Password.** The credentials provided do not match any registered users.")
 
+with tab3:
+    st.subheader("📚 Cryptographic Foundation: Diffie-Hellman & XOR")
+    st.markdown("""
+    This application demonstrates secure communication by establishing a shared secret over an untrusted channel using **Diffie-Hellman Key Exchange (DHKE)**, then using that secret for **Symmetric XOR Encryption**.
+    """)
+    
+    st.markdown("### 🔑 1. The Diffie-Hellman Protocol")
+    st.markdown("""
+    The Diffie-Hellman key exchange algorithm allows two parties (Client and Server) to generate a shared secret key that only they know, even if an eavesdropper is listening to all their communication.
+    """)
+    
+    st.info("💡 **Did you know?** DHKE is not used to encrypt the messages themselves; rather, it is used to safely agree on a shared symmetric key, which is then used by a symmetric cipher (like XOR in this demo, or AES in real-world protocols) to encrypt/decrypt messages.")
+    
+    st.markdown("#### ⚙️ The Mathematical Steps:")
+    
+    st.markdown("**Step 1: Global Public Parameters**")
+    st.markdown("Both parties agree on a large prime number $P$ and a generator $G$ (a primitive root modulo $P$). These are public and can be known by anyone.")
+    st.latex(r"P \quad (\text{Prime}), \quad G \quad (\text{Generator})")
+    
+    st.markdown("**Step 2: Private Exponents (Secrets)**")
+    st.markdown("- **Client** chooses a secret private key $a$.")
+    st.markdown("- **Server** chooses a secret private key $b$.")
+    st.markdown("These private keys are never transmitted or shared.")
+    
+    st.markdown("**Step 3: Compute Public Keys**")
+    st.markdown("Both parties compute their public keys and exchange them:")
+    st.latex(r"\text{Client Public Key: } A = G^a \pmod P")
+    st.latex(r"\text{Server Public Key: } B = G^b \pmod P")
+    
+    st.markdown("**Step 4: Compute the Shared Secret**")
+    st.markdown("Each party computes the shared secret key using the other party's public key and their own private key:")
+    st.markdown("- **Client** computes: $S_{\text{client}} = B^a \pmod P$")
+    st.markdown("- **Server** computes: $S_{\text{server}} = A^b \pmod P$")
+    
+    st.markdown("#### 🤝 Why does the math work?")
+    st.markdown("Because of modular exponentiation rules, both computations yield the exact same result:")
+    st.latex(r"S = (G^b)^a \equiv (G^a)^b \equiv G^{ab} \pmod P")
+    
+    st.divider()
+    
+    st.markdown("### 🔒 2. XOR Symmetric Encryption")
+    st.markdown("""
+    Once the shared key $S$ is established, it is used as the key for encryption. In this app, we use a classic **XOR (Exclusive OR) Cipher**.
+    
+    An XOR cipher operates on the binary representations of the plaintext and the key:
+    """)
+    st.latex(r"\text{Encryption: } C_i = P_i \oplus S")
+    st.latex(r"\text{Decryption: } P_i = C_i \oplus S")
+    st.markdown("""
+    Where:
+    - $P_i$ is the character code point of the plaintext character.
+    - $C_i$ is the encrypted integer value.
+    - $S$ is the Shared Symmetric Key.
+    - $\\oplus$ is the bitwise XOR operation.
+    
+    #### 🛡️ Properties of XOR Encryption:
+    - **Self-Inverse**: Applying the XOR operation twice with the same key restores the original value: $(P_i \\oplus S) \\oplus S = P_i$. This is why the same function is used to both encrypt and decrypt.
+    - **Symmetric**: Both client and server must possess the exact same key $S$ to communicate.
+    """)
+
 st.divider()
 
 # Developer Expander containing active keys and values configured in the terminal
@@ -265,7 +309,14 @@ with st.expander("🛠️ Cryptographic Under-the-Hood Telemetry (Developer Pane
 
     # Add parameters reset control
     st.subheader("Reset Configuration")
-    if st.button("Delete Cache & Re-configure via Terminal"):
+    if st.button("Reset & Re-configure Parameters", use_container_width=True):
         if os.path.exists(CONFIG_FILE):
-            os.remove(CONFIG_FILE)
-        st.warning("⚠️ Configuration cleared! Please stop the server with Ctrl+C in your terminal and run 'streamlit run diffe-hellman.py' again to enter new parameters.")
+            try:
+                os.remove(CONFIG_FILE)
+            except Exception:
+                pass
+        if "crypto_params" in st.session_state:
+            del st.session_state.crypto_params
+        st.toast("Configuration cleared! Refreshing setup...", icon="🔄")
+        time.sleep(1)
+        st.rerun()
